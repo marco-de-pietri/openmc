@@ -22,9 +22,10 @@ __all__ = [
     'EnergyFilter', 'EnergyoutFilter', 'EnergyFunctionFilter', 'LegendreFilter',
     'MaterialFilter', 'MaterialFromFilter', 'MeshFilter', 'MeshBornFilter',
     'MeshMaterialFilter', 'MeshSurfaceFilter', 'MuFilter', 'MuSurfaceFilter',
-    'ParentNuclideFilter', 'ParticleFilter', 'PolarFilter', 'SphericalHarmonicsFilter',
-    'SpatialLegendreFilter', 'SurfaceFilter', 'TimeFilter', 'UniverseFilter',
-    'WeightFilter', 'ZernikeFilter', 'ZernikeRadialFilter', 'filters'
+    'ParentNuclideFilter', 'ParticleFilter', 'ParticleProductionFilter', 'PolarFilter',
+    'ReactionFilter', 'SphericalHarmonicsFilter', 'SpatialLegendreFilter',
+    'SurfaceFilter', 'TimeFilter', 'UniverseFilter', 'WeightFilter', 'ZernikeFilter',
+    'ZernikeRadialFilter', 'filters'
 ]
 
 # Tally functions
@@ -607,8 +608,28 @@ class ParticleFilter(Filter):
         return [ParticleType(i) for i in particle_i]
 
 
+class ParticleProductionFilter(Filter):
+    """Filter secondary-particle production events.
+
+    .. versionadded:: 0.16.0
+
+    """
+
+    filter_type = 'particleproduction'
+
+
 class PolarFilter(Filter):
     filter_type = 'polar'
+
+
+class ReactionFilter(Filter):
+    """Filter tally events by reaction type.
+
+    .. versionadded:: 0.16.0
+
+    """
+
+    filter_type = 'reaction'
 
 
 class SphericalHarmonicsFilter(Filter):
@@ -711,7 +732,9 @@ _FILTER_TYPE_MAP = {
     'musurface': MuSurfaceFilter,
     'parentnuclide': ParentNuclideFilter,
     'particle': ParticleFilter,
+    'particleproduction': ParticleProductionFilter,
     'polar': PolarFilter,
+    'reaction': ReactionFilter,
     'sphericalharmonics': SphericalHarmonicsFilter,
     'spatiallegendre': SpatialLegendreFilter,
     'surface': SurfaceFilter,

@@ -642,6 +642,14 @@ void RandomRay::attenuate_flux_linear_source(
     moment_matrix_estimate *= distance;
     srh.mom_matrix() += moment_matrix_estimate;
 
+    // With the source gradient limiter enabled, grow the region's sampled
+    // bounding box with this segment's endpoints, which lie on the region
+    // boundary (or inside it, where the ray starts or ends).
+    if (FlatSourceDomain::source_gradient_limiter_) {
+      srh.extent().expand(r);
+      srh.extent().expand(r + distance * u());
+    }
+
     srh.n_hits() += 1;
   }
 
@@ -895,7 +903,7 @@ SourceSite RandomRay::sample_s2()
   site.r = space->sample(current_seed()).first;
 
   // Sample either left or right for S2 (flashlight) transport.
-  site.u = {prn(current_seed()) < 0.5 ? -1 : 1, 0.0, 0.0};
+  site.u = {prn(current_seed()) < 0.5 ? -1.0 : 1.0, 0.0, 0.0};
 
   return site;
 }

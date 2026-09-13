@@ -82,4 +82,14 @@ double AngleDistribution::sample(double E, uint64_t* seed) const
   return mu;
 }
 
+double AngleDistribution::evaluate(double E, double mu) const
+{
+  // Find energy bin and calculate interpolation factor
+  int i;
+  double r;
+  get_energy_index(energy_, E, i, r);
+  return r * distribution_[i + 1]->evaluate(mu) +
+         (1.0 - r) * distribution_[i]->evaluate(mu);
+}
+
 } // namespace openmc
