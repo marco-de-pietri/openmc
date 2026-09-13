@@ -128,7 +128,6 @@ def plot_xs(
     temperature: float = 294.0,
     axis: "plt.Axes" | None = None,
     sab_name: str | None = None,
-    incident_particle: str = 'neutron',
     ce_cross_sections: str | None = None,
     mg_cross_sections: str | None = None,
     enrichment: float | None = None,
@@ -136,6 +135,7 @@ def plot_xs(
     orders: Iterable[int] | None = None,
     divisor_orders: Iterable[int] | None = None,
     energy_axis_units: str = "eV",
+    incident_particle: str = 'neutron',
     **kwargs,
 ) -> "plt.Figure" | None:
     """Creates a figure of continuous-energy cross sections for this item.
@@ -185,6 +185,10 @@ def plot_xs(
 
         .. versionadded:: 0.15.0
 
+    incident_particle : {'neutron', 'photon'}, optional
+        Incident particle of the library to source data from. Photon data can
+        only be requested with integer MT numbers. Defaults to 'neutron'.
+
     Returns
     -------
     fig : matplotlib.figure.Figure
@@ -216,13 +220,15 @@ def plot_xs(
         if plot_CE:
             cv.check_type("this", this, (str, openmc.Material))
             # Calculate for the CE cross sections
-            E, data = calculate_cexs(this, types, incident_particle,temperature, sab_name,
-                                    ce_cross_sections, enrichment)
+            E, data = calculate_cexs(this, types, temperature, sab_name,
+                                     ce_cross_sections, enrichment,
+                                     incident_particle=incident_particle)
             if divisor_types:
                 cv.check_length('divisor types', divisor_types, len(types))
-                Ediv, data_div = calculate_cexs(this, divisor_types, incident_particle, temperature,
+                Ediv, data_div = calculate_cexs(this, divisor_types, temperature,
                                                 sab_name, ce_cross_sections,
-                                                enrichment)
+                                                enrichment,
+                                                incident_particle=incident_particle)
 
                 # Create a new union grid, interpolate data and data_div on to that
                 # grid, and then do the actual division
@@ -289,8 +295,9 @@ def plot_xs(
     return fig
 
 
-def calculate_cexs(this, types, incident_particle='neutron', temperature=294., sab_name=None,
-                   cross_sections=None, enrichment=None, ncrystal_cfg=None):
+def calculate_cexs(this, types, temperature=294., sab_name=None,
+                   cross_sections=None, enrichment=None, ncrystal_cfg=None,
+                   incident_particle='neutron'):
     """Calculates continuous-energy cross sections of a requested type.
 
     Parameters
@@ -300,9 +307,6 @@ def calculate_cexs(this, types, incident_particle='neutron', temperature=294., s
         str
     types : Iterable of values of PLOT_TYPES
         The type of cross sections to calculate
-    incident_particle : str
-        The incident particle used to fetch the appropriate library.
-        Can be only 'neutron' or 'photon'.
     temperature : float, optional
         Temperature in Kelvin to plot. If not specified, a default
         temperature of 294K will be plotted. Note that the nearest
@@ -318,6 +322,9 @@ def calculate_cexs(this, types, incident_particle='neutron', temperature=294., s
         (natural composition).
     ncrystal_cfg : str, optional
         Configuration string for NCrystal material.
+    incident_particle : {'neutron', 'photon'}, optional
+        Incident particle of the library to source data from. Photon data can
+        only be requested with integer MT numbers. Defaults to 'neutron'.
 
     Returns
     -------
@@ -340,12 +347,13 @@ def calculate_cexs(this, types, incident_particle='neutron', temperature=294., s
     if isinstance(this, str):
         if this in ELEMENT_NAMES:
             energy_grid, data = _calculate_cexs_elem_mat(
-                this, types, incident_particle, temperature, cross_sections, sab_name, enrichment
+                this, types, temperature, cross_sections, sab_name, enrichment,
+                incident_particle=incident_particle
             )
         else:
             energy_grid, xs = _calculate_cexs_nuclide(
-                this, types, incident_particle, temperature, sab_name, cross_sections,
-                ncrystal_cfg
+                this, types, temperature, sab_name, cross_sections,
+                ncrystal_cfg, incident_particle=incident_particle
             )
 
             # Convert xs (Iterable of Callable) to a grid of cross section values
@@ -355,14 +363,16 @@ def calculate_cexs(this, types, incident_particle='neutron', temperature=294., s
             for line in range(len(types)):
                 data[line, :] = xs[line](energy_grid)
     else:
-        energy_grid, data = _calculate_cexs_elem_mat(this, types, incident_particle, temperature,
-                                                     cross_sections)
+        energy_grid, data = _calculate_cexs_elem_mat(this, types, temperature,
+                                                     cross_sections,
+                                                     incident_particle=incident_particle)
 
     return energy_grid, data
 
 
-def _calculate_cexs_nuclide(this, types, incident_particle='neutron', temperature=294., sab_name=None,
-                            cross_sections=None, ncrystal_cfg=None):
+def _calculate_cexs_nuclide(this, types, temperature=294., sab_name=None,
+                            cross_sections=None, ncrystal_cfg=None,
+                            incident_particle='neutron'):
     """Calculates continuous-energy cross sections of a requested type.
 
     Parameters
@@ -374,9 +384,6 @@ def _calculate_cexs_nuclide(this, types, incident_particle='neutron', temperatur
         in openmc.PLOT_TYPES or keys from openmc.data.REACTION_MT which
         correspond to a reaction description e.g '(n,2n)' or integers which
         correspond to reaction channel (MT) numbers.
-    incident_particle : str
-        The incident particle used to fetch the appropriate library.
-        Can be only 'neutron' or 'photon'.
     temperature : float, optional
         Temperature in Kelvin to plot. If not specified, a default
         temperature of 294K will be plotted. Note that the nearest
@@ -388,6 +395,9 @@ def _calculate_cexs_nuclide(this, types, incident_particle='neutron', temperatur
         Location of cross_sections.xml file. Default is None.
     ncrystal_cfg : str, optional
         Configuration string for NCrystal material.
+    incident_particle : {'neutron', 'photon'}, optional
+        Incident particle of the library to source data from. Photon data can
+        only be requested with integer MT numbers. Defaults to 'neutron'.
 
     Returns
     -------
@@ -404,9 +414,10 @@ def _calculate_cexs_nuclide(this, types, incident_particle='neutron', temperatur
         try:
             z = openmc.data.zam(this)[0]
             nuclide = openmc.data.ATOMIC_SYMBOL[z]
-        except (ValueError, KeyError, TypeError):
+        except (ValueError, KeyError, TypeError) as e:
             if this not in openmc.data.ELEMENT_SYMBOL.values():
-                raise ValueError(f"Element '{this}' not found in ELEMENT_SYMBOL.")
+                raise ValueError(
+                    f"'{this}' is not a recognized nuclide or element.") from e
             nuclide = this
     else:
         nuclide = this
@@ -470,10 +481,9 @@ def _calculate_cexs_nuclide(this, types, incident_particle='neutron', temperatur
             energy_grid = nuc.energy[nucT]
     elif incident_particle == 'photon':
         nuc = openmc.data.IncidentPhoton.from_hdf5(lib['path'])
-        if any(type(line) is not int for line in types):
+        if any(not isinstance(line, int) for line in types):
             raise TypeError("Photon cross sections can only be requested "
                             "with integer MT numbers.")
-
 
     # Parse the types
     mts = []
@@ -482,7 +492,7 @@ def _calculate_cexs_nuclide(this, types, incident_particle='neutron', temperatur
     for line in types:
         if line in PLOT_TYPES:
             tmp_mts = [mtj for mti in PLOT_TYPES_MT[line] for mtj in
-                        nuc.get_reaction_components(mti)]
+                       nuc.get_reaction_components(mti)]
             mts.append(tmp_mts)
             if line.startswith('nu'):
                 yields.append(True)
@@ -531,9 +541,9 @@ def _calculate_cexs_nuclide(this, types, incident_particle='neutron', temperatur
                     nc_func = nc_scatter.xsect
                     nc_emax = 5 # eV # this should be obtained from NCRYSTAL_MAX_ENERGY
                     energy_grid = np.union1d(np.geomspace(min(energy_grid),
-                                                            1.1*nc_emax,
-                                                            1000),energy_grid) # NCrystal does not have
-                                                                                # an intrinsic energy grid
+                                                          1.1*nc_emax,
+                                                          1000),energy_grid) # NCrystal does not have
+                                                                             # an intrinsic energy grid
                     pw_funcs = openmc.data.Regions1D(
                         [nc_func, nuc[mt].xs[nucT]],
                         [nc_emax])
@@ -545,7 +555,7 @@ def _calculate_cexs_nuclide(this, types, incident_particle='neutron', temperatur
                     # Get the total yield first if available. This will be
                     # used primarily for fission.
                     for prod in chain(nuc[mt].products,
-                                        nuc[mt].derived_products):
+                                      nuc[mt].derived_products):
                         if prod.particle == 'neutron' and \
                             prod.emission_mode == 'total':
                             func = openmc.data.Combination(
@@ -559,7 +569,7 @@ def _calculate_cexs_nuclide(this, types, incident_particle='neutron', temperatur
                         # multiplication.
                         func = None
                         for prod in chain(nuc[mt].products,
-                                            nuc[mt].derived_products):
+                                          nuc[mt].derived_products):
                             if prod.particle == 'neutron' and \
                                 prod.emission_mode != 'total':
                                 if func:
@@ -577,12 +587,12 @@ def _calculate_cexs_nuclide(this, types, incident_particle='neutron', temperatur
                             # reactions like MT=4
                             funcs.append(nuc[mt].xs[nucT])
                 else:
-                    # general MT that can called with 
+                    # General MT that can be called with either
                     # photons or neutrons
                     if incident_particle == 'photon':
                         temp_xs = nuc[mt].xs
                         energy_grid = np.union1d(energy_grid, temp_xs.x)
-                    if incident_particle == 'neutron':
+                    else:
                         temp_xs = nuc[mt].xs[nucT]
                     funcs.append(temp_xs)
             elif mt == UNITY_MT:
@@ -597,15 +607,15 @@ def _calculate_cexs_nuclide(this, types, incident_particle='neutron', temperatur
         funcs = funcs if funcs else [lambda x: 0.]
         xs.append(openmc.data.Combination(funcs, op))
 
-    if  len(energy_grid) == 0:
+    if len(energy_grid) == 0:
         energy_grid = np.array([_MIN_E, _MAX_E], dtype=float)
 
     return energy_grid, xs
 
 
-def _calculate_cexs_elem_mat(this, types, incident_particle='neutron', temperature=294.,
+def _calculate_cexs_elem_mat(this, types, temperature=294.,
                              cross_sections=None, sab_name=None,
-                             enrichment=None):
+                             enrichment=None, incident_particle='neutron'):
     """Calculates continuous-energy cross sections of a requested type.
 
     Parameters
@@ -614,9 +624,6 @@ def _calculate_cexs_elem_mat(this, types, incident_particle='neutron', temperatu
         Object to source data from. Element can be input as str
     types : Iterable of values of PLOT_TYPES
         The type of cross sections to calculate
-    incident_particle : str
-        The incident particle used to fetch the appropriate library.
-        Can be only 'neutron' or 'photon'.
     temperature : float, optional
         Temperature in Kelvin to plot. If not specified, a default
         temperature of 294K will be plotted. Note that the nearest
@@ -630,6 +637,9 @@ def _calculate_cexs_elem_mat(this, types, incident_particle='neutron', temperatu
         Enrichment for U235 in weight percent. For example, input 4.95 for
         4.95 weight percent enriched U. Default is None
         (natural composition).
+    incident_particle : {'neutron', 'photon'}, optional
+        Incident particle of the library to source data from. Photon data can
+        only be requested with integer MT numbers. Defaults to 'neutron'.
 
     Returns
     -------
@@ -697,8 +707,10 @@ def _calculate_cexs_elem_mat(this, types, incident_particle='neutron', temperatu
         name = nuclide[0]
         nuc = nuclide[1]
         nuc_sab_name = sabs.get(name)
-        temp_E, temp_xs = calculate_cexs(nuc, types, incident_particle, T, nuc_sab_name, cross_sections,
-                                         ncrystal_cfg=ncrystal_cfg
+        temp_E, temp_xs = calculate_cexs(nuc, types, T, nuc_sab_name,
+                                         cross_sections,
+                                         ncrystal_cfg=ncrystal_cfg,
+                                         incident_particle=incident_particle
                                          )
         E.append(temp_E)
         # Since the energy grids are different, store the cross sections as

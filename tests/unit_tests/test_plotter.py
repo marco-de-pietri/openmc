@@ -199,6 +199,7 @@ def _any_photon_mt(element_symbol, cross_sections=None):
     # `reactions` is a dict keyed by MT
     return next(iter(inc.reactions.keys()))
 
+
 @pytest.mark.parametrize("this", ["Be", "Be9"])
 def test_calculate_cexs_photon_with_element_and_nuclide(this):
     mt = _any_photon_mt("Be")
@@ -244,6 +245,7 @@ def test_calculate_cexs_photon_with_material():
     assert len(energy_grid) > 1
     assert len(data) == 1
     assert len(data[0]) == len(energy_grid)
+
 
 def test_calculate_cexs_photon_material_element_vs_explicit_natural_abundance():
     mt = _any_photon_mt("C")
@@ -343,9 +345,9 @@ def test_calculate_cexs_photon_total_attenuation_reference_values():
 
         return xs_mat_eval
 
-    
+
     pb_vals = _run_element("Pb", pb_density)
     v_vals = _run_element("V", v_density)
-    
+
     assert np.allclose(pb_vals, pb_expected, rtol=1e-2, atol=1e-8)
     assert np.allclose(v_vals, v_expected, rtol=1e-2, atol=1e-8)

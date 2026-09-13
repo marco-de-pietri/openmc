@@ -16,7 +16,7 @@ from . import HDF5_VERSION, HDF5_VERSION_MAJOR
 from .ace import Table, get_metadata, get_table
 from .data import ATOMIC_SYMBOL, EV_PER_MEV
 from .endf import (
-    SUM_RULES, as_evaluation, get_head_record, get_tab1_record, get_list_record)
+    as_evaluation, get_head_record, get_tab1_record, get_list_record)
 from .function import Tabulated1D
 
 
@@ -33,6 +33,17 @@ _SUBSHELLS = (None, 'K', 'L1', 'L2', 'L3', 'M1', 'M2', 'M3', 'M4', 'M5',
               'N1', 'N2', 'N3', 'N4', 'N5', 'N6', 'N7', 'O1', 'O2', 'O3',
               'O4', 'O5', 'O6', 'O7', 'O8', 'O9', 'P1', 'P2', 'P3', 'P4',
               'P5', 'P6', 'P7', 'P8', 'P9', 'P10', 'P11', 'Q1', 'Q2', 'Q3')
+
+# Photoatomic sum rules (ENDF-102, MF=23). These are *not* the incident
+# neutron sum rules: MT numbers below 500 mean something entirely different
+# for photons, and the redundant photon reactions decompose differently.
+# MT 501 and 516 are never written to OpenMC's photon HDF5 files, so the
+# decomposition below is the only way to obtain them.
+_SUM_RULES = {
+    501: [502, 504, 516, 522],   # total = coherent + incoherent + pair + photoelectric
+    516: [515, 517],             # pair production = electron field + nuclear field
+    522: list(range(534, 573)),  # photoelectric = sum over subshells
+}
 
 _REACTION_NAME = {
     501: ('Total photon interaction', 'total'),
@@ -501,8 +512,8 @@ class IncidentPhoton(EqualityMixin):
 
         """
         mts = []
-        if mt in SUM_RULES:
-            for mt_i in SUM_RULES[mt]:
+        if mt in _SUM_RULES:
+            for mt_i in _SUM_RULES[mt]:
                 mts += self.get_reaction_components(mt_i)
         if mts:
             return mts
