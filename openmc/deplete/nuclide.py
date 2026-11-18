@@ -97,6 +97,8 @@ class Nuclide:
         attributes 'type', 'target', and 'branching_ratio'.
     n_reaction_paths : int
         Number of possible reaction pathways.
+    breakup_reactions : list of str
+        Reactions supplied by neutron inelastic breakup components
     reactions : list of openmc.deplete.ReactionTuple
         Reaction information. Each element of the list is a named tuple with
         attribute 'type', 'target', 'Q', and 'branching_ratio'.
@@ -121,6 +123,7 @@ class Nuclide:
 
         # Reaction paths
         self.reactions = []
+        self.breakup_reactions = []
 
         # Decay sources
         self.sources = {}
@@ -182,7 +185,7 @@ class Nuclide:
             DecayTuple(type, target, branching_ratio)
         )
 
-    def add_reaction(self, type, target, Q, branching_ratio):
+    def add_reaction(self, type, target, Q, branching_ratio, breakup=False):
         """Add transmutation reaction to the nuclide
 
         Parameters
@@ -198,8 +201,15 @@ class Nuclide:
             Q value of the reaction in [eV]
         branching_ratio : float
             Branching ratio of the reaction
+        breakup : bool, optional
+            Whether inelastic breakup components supply this reaction.
 
         """
+        marked = type in self.breakup_reactions
+        if breakup != marked and any(rx.type == type for rx in self.reactions):
+            raise ValueError(f"Mixed breakup and ordinary {type} paths for {self.name}")
+        if breakup and not marked:
+            self.breakup_reactions.append(type)
         self.reactions.append(
             ReactionTuple(type, target, Q, branching_ratio)
         )
@@ -272,8 +282,8 @@ class Nuclide:
                     Q = fission_q
 
             # Append reaction
-            nuc.reactions.append(ReactionTuple(
-                r_type, target, Q, branching_ratio))
+            breakup = reaction_elem.get("breakup", "false").lower() in ("true", "1")
+            nuc.add_reaction(r_type, target, Q, branching_ratio, breakup=breakup)
 
         fpy_elem = element.find('neutron_fission_yields')
         if fpy_elem is not None:
@@ -330,6 +340,8 @@ class Nuclide:
         for rx, daughter, Q, br in self.reactions:
             rx_elem = ET.SubElement(elem, 'reaction')
             rx_elem.set('type', rx)
+            if rx in self.breakup_reactions:
+                rx_elem.set('breakup', 'true')
             rx_elem.set('Q', str(Q))
             if daughter is not None:
                 rx_elem.set('target', daughter)
@@ -358,6 +370,8 @@ class Nuclide:
                does the sum of branching ratios equal about one?
             2) for fission reactions, does the sum of fission yield
                fractions equal about two?
+            3) does each breakup marker identify exactly one supported
+               reaction with unit branching ratio?
 
         Parameters
         ----------
@@ -390,9 +404,23 @@ class Nuclide:
         openmc.deplete.Chain.validate
         """
 
+        from .chain import BREAKUP_MODES
+
         msg_func = ("Nuclide {name} has {prop} that sum to {actual} "
                     "instead of {expected} +/- {tol:7.4e}").format
         valid = True
+
+        for name in self.breakup_reactions:
+            paths = [rx for rx in self.reactions if rx.type == name]
+            if (name not in BREAKUP_MODES.values() or len(paths) != 1
+                    or paths[0].branching_ratio != 1.0):
+                msg = f"Invalid breakup path {name} for {self.name}"
+                if strict:
+                    raise ValueError(msg)
+                if quiet:
+                    return False
+                warn(msg)
+                valid = False
 
         # check decay modes
         if self.decay_modes:

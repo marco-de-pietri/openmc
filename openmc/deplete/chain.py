@@ -19,7 +19,7 @@ from typing import List
 import lxml.etree as ET
 
 from openmc.checkvalue import check_type, check_length, check_greater_than, PathLike
-from openmc.data import gnds_name, zam
+from openmc.data import REACTION_NAME, gnds_name, zam
 from openmc.exceptions import DataError
 from .nuclide import FissionYieldDistribution, Nuclide
 from .._xml import get_text
@@ -118,6 +118,49 @@ REACTIONS = {
 }
 
 __all__ = ["Chain", "REACTIONS"]
+
+
+BREAKUP_MODES = {
+    lr: REACTION_NAME[lr] for lr in (22, 23, 24, 25, 28, 29, 30, 32, 33, 34, 35, 36)
+}
+
+
+def breakup_paths(parent, records, selected, inventory):
+    """Return one inventory path per selected neutron inelastic breakup mode."""
+    components = defaultdict(list)
+    for mt, record in records.items():
+        name = BREAKUP_MODES.get(record['lr'])
+        if 51 <= mt <= 91 and name is not None and name in selected:
+            components[name].append(mt)
+
+    paths = []
+    for name, mts in components.items():
+        first = records[mts[0]]
+        conflicts = REACTIONS[name].mts.intersection(records)
+        if 4 in records and records[4]['lr'] == first['lr']:
+            conflicts.add(4)
+        if conflicts or any(records[mt]['qm'] != first['qm'] for mt in mts):
+            raise ValueError(
+                f"Conflicting {parent} {name} MTs {sorted(conflicts.union(mts))}")
+
+        # The residual offsets include all emitted neutrons and charged fragments.
+        z, a, _ = zam(parent)
+        delta_a, delta_z = openmc.data.DADZ[name]
+        a += delta_a
+        z += delta_z
+        if z == a == 0:
+            target = None
+        elif 0 < z <= a:
+            target = gnds_name(z, a)
+        else:
+            raise ValueError(f"Inconsistent breakup balance for {parent} MTs {mts}")
+
+        for product in (*REACTIONS[name].secondaries, target):
+            if product is not None and product not in inventory:
+                raise ValueError(f"Missing breakup product {product} for {parent} MTs {mts}")
+        paths.append((name, target, first['qm']))
+
+    return paths
 
 
 def replace_missing(product, decay_data):
@@ -333,8 +376,10 @@ class Chain:
         reactions : iterable of str, optional
             Transmutation reactions to include in the depletion chain, e.g.,
             `["(n,2n)", "(n,gamma)"]`. Note that fission is always included if
-            it is present. A complete listing of transmutation reactions can be
-            found in :data:`openmc.deplete.chain.REACTIONS`.
+            it is present. Supported neutron inelastic breakup paths are
+            included when their conventional reaction name is selected,
+            e.g., "(n,na)". See :data:`openmc.deplete.chain.REACTIONS`
+            for the full list of transmutation reactions.
 
             .. versionadded:: 0.12.1
         progress : bool, optional
@@ -356,7 +401,7 @@ class Chain:
         3. Copy the yields of U235 if the previous two checks fail
 
         """
-        transmutation_reactions = reactions
+        transmutation_reactions = tuple(reactions)
 
         # Create dictionary mapping target to filename
         if progress:
@@ -370,8 +415,8 @@ class Chain:
                 if mf == 3:
                     file_obj = StringIO(evaluation.section[3, mt])
                     openmc.data.endf.get_head_record(file_obj)
-                    q_value = openmc.data.endf.get_cont_record(file_obj)[1]
-                    reactions[name][mt] = q_value
+                    qm, qi, _, lr, _, _ = openmc.data.endf.get_cont_record(file_obj)
+                    reactions[name][mt] = {'qm': qm, 'qi': qi, 'lr': lr}
 
         # Determine what decay and FPY nuclides are available
         if progress:
@@ -441,6 +486,10 @@ class Chain:
             fissionable = False
             if parent in reactions:
                 reactions_available = set(reactions[parent].keys())
+                paths = breakup_paths(
+                    parent, reactions[parent], transmutation_reactions, decay_data)
+                for name, target, qm in paths:
+                    nuclide.add_reaction(name, target, qm, 1.0, breakup=True)
                 for name in transmutation_reactions:
                     mts = REACTIONS[name].mts
                     delta_A, delta_Z = openmc.data.DADZ[name]
@@ -457,7 +506,7 @@ class Chain:
                         # Store Q value
                         for mt in sorted(mts):
                             if mt in reactions[parent]:
-                                q_value = reactions[parent][mt]
+                                q_value = reactions[parent][mt]['qi']
                                 break
                         else:
                             q_value = 0.0
@@ -465,7 +514,7 @@ class Chain:
                         nuclide.add_reaction(name, daughter, q_value, 1.0)
 
                 if any(mt in reactions_available for mt in openmc.data.FISSION_MTS):
-                    q_value = reactions[parent][18]
+                    q_value = reactions[parent][18]['qi']
                     nuclide.add_reaction('fission', None, q_value, 1.0)
                     fissionable = True
 
@@ -1276,8 +1325,9 @@ class Chain:
                     new_nuclide.add_decay_mode(mode.type, None, mode.branching_ratio)
 
             for rx in previous.reactions:
+                breakup = rx.type in previous.breakup_reactions
                 if rx.target in all_isotopes:
-                    new_nuclide.add_reaction(*rx)
+                    new_nuclide.add_reaction(*rx, breakup=breakup)
                 elif rx.type == "fission":
                     new_yields = new_nuclide.yield_data = (
                         previous.yield_data.restrict_products(name_sort))
@@ -1285,7 +1335,8 @@ class Chain:
                         new_nuclide.add_reaction(*rx)
                 # Maintain total destruction rates but set no target
                 else:
-                    new_nuclide.add_reaction(rx.type, None, rx.Q, rx.branching_ratio)
+                    new_nuclide.add_reaction(rx.type, None, rx.Q, rx.branching_ratio,
+                                             breakup=breakup)
 
             new_chain.add_nuclide(new_nuclide)
 

@@ -33,9 +33,11 @@ ChainNuclide::ChainNuclide(pugi::xml_node node)
 
   // Read reactions to store MT -> product map
   for (pugi::xml_node reaction_node : node.children("reaction")) {
-    std::string rx_name = get_node_value(reaction_node, "type");
-    if (!reaction_node.attribute("target"))
+    // Breakup paths use inelastic components from the neutron data.
+    if (reaction_node.attribute("breakup").as_bool() ||
+        !reaction_node.attribute("target"))
       continue;
+    std::string rx_name = get_node_value(reaction_node, "type");
     std::string rx_target = get_node_value(reaction_node, "target");
     double branching_ratio = 1.0;
     if (reaction_node.attribute("branching_ratio")) {
