@@ -21,6 +21,7 @@ from openmc.exceptions import DataError
 import openmc.lib
 from openmc.mpi import comm
 from .abc import OperatorResult
+from .chain import BREAKUP_MODES
 from .openmc_operator import OpenMCOperator
 from .pool import _distribute
 from .results import Results
@@ -354,6 +355,46 @@ class CoupledOperator(OpenMCOperator):
         self._yield_helper = fission_helper.from_operator(
             self, **fission_yield_opts)
 
+    def _resolve_breakup_rates(self):
+        """Find the inelastic MTs that supply each marked breakup rate.
+
+        For each burnable nuclide with breakup reactions marked in the
+        depletion chain, match the LR flags of its inelastic reactions
+        (MTs 51–91) to the marked reaction names.
+
+        Returns
+        -------
+        dict
+            Mapping from (nuclide name, reaction name) to a sorted tuple of
+            matching MT numbers. For example, if MTs 51 and 52 for O16 both
+            hypothetically have LR=22 and the chain marks its (n,na)
+            reaction, the result is ``{('O16', '(n,na)'): (51, 52)}``.
+
+        Raises
+        ------
+        DataError
+            If a nuclide with a marked breakup reaction has an inelastic
+            level without an LR flag or no levels matching the marked reaction.
+        """
+        components = {}
+        for name in self._burnable_nucs:
+            marked = self.chain[name].breakup_reactions
+            if not marked:
+                continue
+            if name not in openmc.lib.nuclides:
+                openmc.lib.load_nuclide(name)
+            metadata = openmc.lib.nuclides[name].reaction_breakup_flags
+            levels = sorted(mt for mt in metadata if 51 <= mt <= 91)
+            missing = [mt for mt in levels if metadata[mt] is None]
+            for reaction in sorted(marked):
+                if missing:
+                    raise DataError(f"{name} {reaction}: missing LR for MTs {missing}")
+                mts = tuple(mt for mt in levels if BREAKUP_MODES.get(metadata[mt]) == reaction)
+                if not mts:
+                    raise DataError(f"{name} {reaction}: no matching inelastic levels")
+                components[name, reaction] = mts
+        return components
+
     def initial_condition(self):
         """Performs final setup and returns initial condition.
 
@@ -382,7 +423,10 @@ class CoupledOperator(OpenMCOperator):
         # Generate tallies in memory
         materials = [openmc.lib.materials[int(i)] for i in self.burnable_mats]
 
-        return super().initial_condition(materials)
+        return super().initial_condition(
+            materials,
+            composite_reaction_mts=self._resolve_breakup_rates(),
+        )
 
     def _generate_materials_xml(self):
         """Creates materials.xml from self.number.

@@ -164,6 +164,12 @@ int openmc_spherical_mesh_get_origin(int32_t index, double origin[3]);
 int openmc_spherical_mesh_set_origin(int32_t index, const double origin[3]);
 int openmc_new_filter(const char* type, int32_t* index);
 int openmc_next_batch(int* status);
+//! Get the number of reactions for a loaded nuclide.
+int openmc_nuclide_get_reaction_count(int index, size_t* count);
+//! Fill two arrays of at least capacity entries with MT numbers and LR flags
+//! in reaction order. An LR flag of -1 indicates unavailable metadata.
+int openmc_nuclide_reaction_breakup_flags(
+  int index, size_t capacity, int* mts, int* lrs);
 int openmc_nuclide_name(int index, const char** name);
 int openmc_plot_geometry();
 // Deprecated; use openmc_slice_data.

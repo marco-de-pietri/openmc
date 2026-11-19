@@ -5,7 +5,6 @@ import bisect
 from abc import abstractmethod
 from collections import defaultdict
 from copy import deepcopy
-from itertools import product
 from numbers import Real
 import sys
 
@@ -125,6 +124,70 @@ class TalliedFissionYieldHelper(FissionYieldHelper):
 # -------------------------------------
 
 
+def _build_direct_tally_scores(reactions, nuclides, components):
+    """Select the tally scores needed to compute the requested reaction rates.
+
+    For each reaction, include the partial MTs used by eligible nuclides.
+    Keep the ordinary reaction score if any eligible nuclide needs it or if
+    the eligible nuclides are unspecified. Equivalent scores share a tally
+    column.
+
+    Parameters
+    ----------
+    reactions : iterable of str
+        Depletion reaction names in the order they are requested.
+    nuclides : iterable of str or None
+        Nuclides that may be scored. If None, consider all entries in
+        `components`.
+    components : dict
+        Mapping from (nuclide name, reaction name) to the partial MT numbers
+        whose rates are summed in place of the ordinary reaction rate.
+
+    Returns
+    -------
+    scores : list of str
+        Score labels in tally column order. Partial MTs are converted to
+        strings for the tally.
+    bins : dict of str or int to int
+        Mapping from ordinary reaction names and integer partial MTs to their
+        zero-based column indices in `scores`. The rate reader uses these
+        indices to select columns from each nuclide's tally results.
+    """
+    scores = []
+    bins = {}
+    positions = {}
+    parents = set(nuclides) if nuclides is not None else None
+
+    for reaction in reactions:
+        marked = {name: mts for (name, rx), mts in components.items()
+                  if rx == reaction and (parents is None or name in parents)}
+        sources = []
+        if not marked or parents is None or parents.difference(marked):
+            sources.append(reaction)
+        for mts in marked.values():
+            sources.extend(mts)
+
+        for source in sources:
+            label = str(source)
+            identity = int(label) if label.isdecimal() else REACTION_MT.get(label, label)
+            if label in ('fission', '(n,fission)'):
+                identity = 'fission'
+            if identity not in positions:
+                positions[identity] = len(scores)
+                scores.append(label)
+            bins[source] = positions[identity]
+
+    return scores, bins
+
+
+def _read_direct_tally_rate(row, name, reaction, components, bins):
+    """Read a nuclide's reaction rate from one score or sum its partial MTs."""
+    mts = components.get((name, reaction))
+    if mts is None:
+        return row[bins[reaction]]
+    return sum(row[bins[mt]] for mt in mts)
+
+
 class DirectReactionRateHelper(ReactionRateHelper):
     """Class for generating one-group reaction rates with direct tallies
 
@@ -157,7 +220,7 @@ class DirectReactionRateHelper(ReactionRateHelper):
         ReactionRateHelper.nuclides.fset(self, nuclides)
         self._rate_tally.nuclides = nuclides
 
-    def generate_tallies(self, materials, scores):
+    def generate_tallies(self, materials, scores, *, composite_reaction_mts=None):
         """Produce one-group reaction rate tally
 
         Uses the :mod:`openmc.lib` to generate a tally of relevant reactions
@@ -171,10 +234,17 @@ class DirectReactionRateHelper(ReactionRateHelper):
         scores : iterable of str
             Reaction identifiers, e.g. ``"(n, fission)"``, ``"(n, gamma)"``,
             needed for the reaction rate tally.
+        composite_reaction_mts : dict, optional
+            Partial MTs for each marked (nuclide, reaction) pair.
         """
+        self._scores = list(scores)
+        self._composite_reaction_mts = composite_reaction_mts or {}
+        self._direct_scores, self._direct_score_index = _build_direct_tally_scores(
+            self._scores, None, self._composite_reaction_mts)
+
         self._rate_tally = Tally()
         self._rate_tally.writable = False
-        self._rate_tally.scores = scores
+        self._rate_tally.scores = self._direct_scores
         self._rate_tally.filters = [MaterialFilter(materials)]
         self._rate_tally.multiply_density = False
         self._rate_tally_means_cache = None
@@ -217,8 +287,12 @@ class DirectReactionRateHelper(ReactionRateHelper):
         """
         self._results_cache.fill(0.0)
         full_tally_res = self.rate_tally_means[mat_index]
-        for i_tally, (i_nuc, i_rx) in enumerate(product(nuc_index, rx_index)):
-            self._results_cache[i_nuc, i_rx] = full_tally_res[i_tally]
+        rows = full_tally_res.reshape(len(nuc_index), len(self._direct_scores))
+        for name, row, i_nuc in zip(self.nuclides, rows, nuc_index):
+            for score, i_rx in zip(self._scores, rx_index):
+                self._results_cache[i_nuc, i_rx] = _read_direct_tally_rate(
+                    row, name, score, self._composite_reaction_mts,
+                    self._direct_score_index)
 
         return self._results_cache
 
@@ -273,7 +347,7 @@ class FluxCollapseHelper(ReactionRateHelper):
             if nuclide not in openmc.lib.nuclides:
                 openmc.lib.load_nuclide(nuclide)
 
-    def generate_tallies(self, materials, scores):
+    def generate_tallies(self, materials, scores, *, composite_reaction_mts=None):
         """Produce multigroup flux spectrum tally
 
         Uses the :mod:`openmc.lib` module to generate a multigroup flux tally
@@ -287,8 +361,11 @@ class FluxCollapseHelper(ReactionRateHelper):
         scores : iterable of str
             Reaction identifiers, e.g. ``"(n, fission)"``, ``"(n, gamma)"``,
             needed for the reaction rate tally.
+        composite_reaction_mts : dict, optional
+            Partial MTs for each marked (nuclide, reaction) pair.
         """
         self._materials = materials
+        self._composite_reaction_mts = composite_reaction_mts or {}
 
         # adds an entry for fisson to the dictionary of reactions
         self._mts = [REACTION_MT[x] for x in scores]
@@ -306,9 +383,12 @@ class FluxCollapseHelper(ReactionRateHelper):
 
         # Create reaction rate tally
         if self._reactions_direct:
+            self._direct_scores, self._direct_score_index = _build_direct_tally_scores(
+                self._reactions_direct, self._nuclides_direct,
+                self._composite_reaction_mts)
             self._rate_tally = Tally()
             self._rate_tally.writable = False
-            self._rate_tally.scores = self._reactions_direct
+            self._rate_tally.scores = self._direct_scores
             self._rate_tally.filters = [MaterialFilter(materials)]
             self._rate_tally.multiply_density = False
             self._rate_tally_means_cache = None
@@ -377,9 +457,8 @@ class FluxCollapseHelper(ReactionRateHelper):
         # Get direct reaction rates
         if self._reactions_direct:
             nuclides_direct = self._rate_tally.nuclides
-            shape = (len(nuclides_direct), len(self._reactions_direct))
+            shape = (len(nuclides_direct), len(self._direct_scores))
             rx_rates = self.rate_tally_means[mat_index].reshape(shape)
-            direct_rx_index = {score: i for i, score in enumerate(self._reactions_direct)}
             direct_nuc_index = {nuc: i for i, nuc in enumerate(nuclides_direct)}
 
         mat = self._materials[mat_index]
@@ -388,16 +467,17 @@ class FluxCollapseHelper(ReactionRateHelper):
             for mt, score, i_rx in zip(self._mts, self._scores, react_index):
                 if score in self._reactions_direct and name in nuclides_direct:
                     # Get reaction rate from tally
-                    i_rx_direct = direct_rx_index[score]
-                    i_nuc_direct = direct_nuc_index[name]
-                    self._results_cache[i_nuc, i_rx] = rx_rates[i_nuc_direct, i_rx_direct]
+                    row = rx_rates[direct_nuc_index[name]]
+                    self._results_cache[i_nuc, i_rx] = _read_direct_tally_rate(
+                        row, name, score, self._composite_reaction_mts,
+                        self._direct_score_index)
                 else:
                     # Use flux to collapse reaction rate (per N)
                     nuc = openmc.lib.nuclides[name]
-                    rate_per_nuc = nuc.collapse_rate(
-                        mt, mat.temperature, self._energies, flux)
-
-                    self._results_cache[i_nuc, i_rx] = rate_per_nuc
+                    mts = self._composite_reaction_mts.get((name, score), (mt,))
+                    self._results_cache[i_nuc, i_rx] = sum(
+                        nuc.collapse_rate(component, mat.temperature, self._energies, flux)
+                        for component in mts)
 
         return self._results_cache
 

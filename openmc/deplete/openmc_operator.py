@@ -341,22 +341,25 @@ class OpenMCOperator(TransportOperator):
 
         """
 
-    def initial_condition(self, materials):
+    def initial_condition(self, materials, **rate_tally_kwargs):
         """Performs final setup and returns initial condition.
 
         Parameters
         ----------
         materials : list of openmc.lib.Material
             list of materials
-
+        **rate_tally_kwargs
+            Additional arguments for the reaction rate helper.
         Returns
+
         -------
         list of numpy.ndarray
             Total density for initial conditions.
 
         """
 
-        self._rate_helper.generate_tallies(materials, self.chain.reactions)
+        self._rate_helper.generate_tallies(
+            materials, self.chain.reactions, **rate_tally_kwargs)
         self._normalization_helper.prepare(
             self.chain.nuclides, self.reaction_rates.index_nuc)
         # Tell fission yield helper what materials this process is

@@ -1188,6 +1188,41 @@ extern "C" int openmc_get_nuclide_index(const char* name, int* index)
   return 0;
 }
 
+extern "C" int openmc_nuclide_get_reaction_count(int index, size_t* count)
+{
+  if (index < 0 || index >= data::nuclides.size()) {
+    set_errmsg("Index in nuclides vector is out of bounds.");
+    return OPENMC_E_OUT_OF_BOUNDS;
+  }
+
+  if (!count) {
+    set_errmsg("Reaction count output pointer is null.");
+    return OPENMC_E_INVALID_SIZE;
+  }
+  *count = data::nuclides[index]->reactions_.size();
+  return 0;
+}
+
+extern "C" int openmc_nuclide_reaction_breakup_flags(
+  int index, size_t capacity, int* mts, int* lrs)
+{
+  if (index < 0 || index >= data::nuclides.size()) {
+    set_errmsg("Index in nuclides vector is out of bounds.");
+    return OPENMC_E_OUT_OF_BOUNDS;
+  }
+
+  const auto& reactions = data::nuclides[index]->reactions_;
+  if (!mts || !lrs || capacity < reactions.size()) {
+    set_errmsg("Insufficient space for reaction metadata.");
+    return OPENMC_E_INVALID_SIZE;
+  }
+  for (size_t i = 0; i < reactions.size(); ++i) {
+    mts[i] = reactions[i]->mt_;
+    lrs[i] = reactions[i]->breakup_flag_;
+  }
+  return 0;
+}
+
 extern "C" int openmc_nuclide_name(int index, const char** name)
 {
   if (index >= 0 && index < data::nuclides.size()) {

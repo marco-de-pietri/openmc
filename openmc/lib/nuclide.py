@@ -29,6 +29,13 @@ _dll.openmc_nuclide_collapse_rate.argtypes = [c_int, c_int, c_double,
     _array_1d_dble, _array_1d_dble, c_int, POINTER(c_double)]
 _dll.openmc_nuclide_collapse_rate.restype = c_int
 _dll.openmc_nuclide_collapse_rate.errcheck = _error_handler
+_dll.openmc_nuclide_get_reaction_count.argtypes = [c_int, POINTER(c_size_t)]
+_dll.openmc_nuclide_get_reaction_count.restype = c_int
+_dll.openmc_nuclide_get_reaction_count.errcheck = _error_handler
+_dll.openmc_nuclide_reaction_breakup_flags.argtypes = [
+    c_int, c_size_t, POINTER(c_int), POINTER(c_int)]
+_dll.openmc_nuclide_reaction_breakup_flags.restype = c_int
+_dll.openmc_nuclide_reaction_breakup_flags.errcheck = _error_handler
 _dll.nuclides_size.restype = c_size_t
 
 
@@ -84,6 +91,18 @@ class Nuclide(_FortranObject):
         name = c_char_p()
         _dll.openmc_nuclide_name(self._index, name)
         return name.value.decode()
+
+    @property
+    def reaction_breakup_flags(self):
+        """Loaded reaction MTs mapped to LR flags (None when unavailable)."""
+        count = c_size_t()
+        _dll.openmc_nuclide_get_reaction_count(self._index, count)
+        if count.value == 0:
+            return {}
+        array = c_int * count.value
+        mts, lrs = array(), array()
+        _dll.openmc_nuclide_reaction_breakup_flags(self._index, count.value, mts, lrs)
+        return {mt: None if lr == -1 else lr for mt, lr in zip(mts, lrs)}
 
     def collapse_rate(self, MT, temperature, energy, flux):
         """Calculate reaction rate based on group-wise flux distribution
