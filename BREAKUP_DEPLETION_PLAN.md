@@ -29,6 +29,8 @@ processes are outside this work.
 
 **Outcome.** Use the Phase 2 resolver in direct and flux-based MicroXS generation, including multigroup flux collapse and direct overrides. Store the combined cross section under the conventional name. Independent depletion with supplied MicroXS consumes those combined values. Document this convention for external cross sections and verify result lookup and restart with the same chain.
 
+See the [Phase 3 implementation and acceptance tests](BREAKUP_DEPLETION_PHASE_3.md).
+
 ## Phase 4 — Verify transport and inventory behavior
 
 **Goal.** Check discovery, rates, and inventories independently. Use portable MF3 fixtures for ordinary levels, supported LR flags, missing metadata, and conflicting same-parent representations. Validate the component sets against the original ENDF/B-VIII.1 evaluations. For Li7 check MT52–82 and for C12 check MT52–62 plus MT91. Exercise O16 MT56/LR22 as a fixture; use the evaluated component list when testing a real library.

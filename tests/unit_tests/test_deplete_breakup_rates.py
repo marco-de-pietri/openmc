@@ -1,4 +1,4 @@
-"""Coupled depletion rates from parent-specific inelastic levels."""
+"""Breakup reaction rates from parent-specific inelastic levels."""
 
 from ctypes import c_int
 from pathlib import Path
@@ -11,8 +11,17 @@ import pytest
 
 import openmc
 import openmc.lib
-from openmc.deplete import Chain, CoupledOperator, Nuclide
-from openmc.deplete import helpers
+from openmc.deplete import (
+    Chain,
+    CoupledOperator,
+    IndependentOperator,
+    MicroXS,
+    Nuclide,
+    PredictorIntegrator,
+    Results,
+    get_microxs_and_flux,
+    helpers,
+)
 
 
 def _make_breakup_chain(parent, reaction):
@@ -99,9 +108,9 @@ def test_breakup_rate_tally_columns(monkeypatch, mode, direct_nuclides):
                 assert rates[nuc_index, 1] == expected
 
 
-@pytest.mark.parametrize('mode', ['direct', 'flux'])
-def test_coupled_breakup_transport(run_in_tmpdir, mode):
-    """Compare coupled depletion rates with separately scored partials."""
+@pytest.fixture
+def breakup_model(run_in_tmpdir):
+    """Build a fixed-source model with two O16 breakup components."""
     # Copy a single isotope and give two real partials controlled LR metadata.
     library = openmc.data.DataLibrary.from_xml()
     hydrogen = library.get_by_material('H1')['path']
@@ -115,9 +124,11 @@ def test_coupled_breakup_transport(run_in_tmpdir, mode):
         elastic = data['O16/reactions/reaction_002'].attrs
         if 'breakup_flag' in elastic:
             del elastic['breakup_flag']
+    fluorine = library.get_by_material('F19')['path']
     library = openmc.data.DataLibrary()
     library.register_file(path)
     library.register_file(hydrogen)
+    library.register_file(fluorine)
     library.export_to_xml('xs.xml')
 
     mat = openmc.Material()
@@ -136,6 +147,15 @@ def test_coupled_breakup_transport(run_in_tmpdir, mode):
         space=openmc.stats.Point(),
         energy=openmc.stats.Discrete([14.0e6], [1.0]),
     )
+    return model
+
+
+@pytest.mark.parametrize('mode', ['direct', 'flux'])
+def test_coupled_breakup_transport(breakup_model, mode):
+    """Compare coupled depletion rates with separately scored partials."""
+    model = breakup_model
+    mat = model.materials[0]
+    path = Path('O16.h5')
     energies = [0.0, 10.0e6, 20.0e6]
     op = CoupledOperator(
         model, _make_breakup_chain('O16', '(n,na)'),
@@ -190,3 +210,190 @@ def test_coupled_breakup_transport(run_in_tmpdir, mode):
             op.finalize()
         with h5py.File(path, 'r+') as data:
             data['O16/reactions/reaction_051'].attrs['breakup_flag'] = 0
+
+
+@pytest.mark.parametrize('initialized', [False, True], ids=['executable', 'lib'])
+def test_breakup_microxs_transport(breakup_model, initialized):
+    """Compare breakup cross sections with independent tallies and collapse."""
+    model = breakup_model
+    mat = model.materials[0]
+    mat.add_nuclide('F19', 0.5)
+    mat.add_nuclide('O16', 0.5)
+    chain = _make_breakup_chain('O16', '(n,na)')
+    names = ['F19', 'O16']
+    reactions = ['(n,gamma)', '(n,na)']
+    energies = [0., 9.e6, 15.e6, 20.e6]
+    mesh = openmc.RegularMesh()
+    mesh.dimension = (2, 1, 1)
+    mesh.lower_left = (-1., -1., -1.)
+    mesh.upper_right = (2., 1., 1.)
+    filters = [openmc.MeshFilter(mesh), openmc.EnergyFilter(energies)]
+    ref = openmc.Tally(
+        filters=filters, scores=['51', '52', *reactions], nuclides=names
+    )
+    ref.multiply_density = False
+    ref_flux = openmc.Tally(filters=filters, scores=['flux'])
+    model.tallies = [ref, ref_flux]
+    original = model.tallies
+    kwargs = {
+        'nuclides': names,
+        'reactions': reactions,
+        'energies': energies,
+        'chain_file': chain,
+        'include_model_tallies': True,
+    }
+    if initialized:
+        model.init_lib()
+    try:
+        fluxes, direct = get_microxs_and_flux(
+            model, mesh, path_statepoint='direct.h5', **kwargs)
+    finally:
+        if initialized:
+            model.finalize_lib()
+    assert model.tallies is original
+    assert list(original) == [ref, ref_flux]
+    with openmc.StatePoint('direct.h5') as sp:
+        rates = sp.tallies[ref.id].get_reshaped_data()
+        flux = sp.tallies[ref_flux.id].get_reshaped_data()[:, :, 0, 0]
+    np.testing.assert_allclose(fluxes, flux)
+    assert np.all(flux[:, -1] == 0.)
+    assert np.all(rates[:, 1, 1, :2] > 0.)
+    for i, table in enumerate(direct):
+        assert table.nuclides == names
+        assert table.reactions == reactions
+        for n, name in enumerate(names):
+            for j, reaction in enumerate(reactions):
+                rate = rates[i, :, n, 2 + j]
+                if (name, reaction) == ('O16', '(n,na)'):
+                    rate = rates[i, :, n, :2].sum(axis=-1)
+                expected = np.divide(rate, flux[i], out=np.zeros_like(rate),
+                                     where=flux[i] != 0.)
+                np.testing.assert_allclose(table[name, reaction], expected)
+
+    if initialized:
+        return
+    _, collapsed = get_microxs_and_flux(
+        model, mesh, reaction_rate_mode='flux', **kwargs
+    )
+    with openmc.lib.TemporarySession(model=model):
+        for i, table in enumerate(collapsed):
+            spectrum = flux[i] / flux[i].sum()
+            for name in names:
+                nuc = openmc.lib.nuclides[name]
+                for reaction in reactions:
+                    mts = (openmc.data.REACTION_MT[reaction],)
+                    if (name, reaction) == ('O16', '(n,na)'):
+                        mts = (51, 52)
+                    expected = sum(
+                        nuc.collapse_rate(mt, 293.6, energies, spectrum) for mt in mts
+                    )
+                    assert table[name, reaction][0] == pytest.approx(expected)
+
+    for selected in (['O16'], names):
+        opts = {'reactions': ['(n,na)']}
+        if selected != names:
+            opts['nuclides'] = selected
+        totals, hybrid = get_microxs_and_flux(
+            model, mesh, reaction_rate_mode='flux', reaction_rate_opts=opts, **kwargs)
+        for i, table in enumerate(hybrid):
+            assert totals[i] == pytest.approx(flux[i].sum())
+            for name in names:
+                for reaction in reactions:
+                    expected = collapsed[i][name, reaction][0]
+                    if reaction == '(n,na)' and name in selected:
+                        direct_avg = np.average(
+                            direct[i][name, reaction], weights=flux[i]
+                        )
+                        assert direct_avg != pytest.approx(expected)
+                        expected = direct_avg
+                    assert table[name, reaction][0] == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(('flag', 'diagnostic'), [
+    pytest.param(None, 'missing LR.*51', id='missing-flag'),
+    pytest.param(0, 'no matching', id='no-match'),
+])
+def test_breakup_microxs_errors(breakup_model, flag, diagnostic):
+    """Check both MicroXS entry points report invalid breakup metadata."""
+    model = breakup_model
+    chain = _make_breakup_chain('O16', '(n,na)')
+    kwargs = dict(nuclides=['O16'], chain_file=chain)
+    original = model.tallies
+    with h5py.File('O16.h5', 'r+') as data:
+        levels = data['O16/reactions']
+        levels['reaction_052'].attrs['breakup_flag'] = 0
+        attrs = levels['reaction_051'].attrs
+        if flag is None:
+            del attrs['breakup_flag']
+        else:
+            attrs['breakup_flag'] = flag
+    match = r'O16 \(n,na\).*' + diagnostic
+    with pytest.raises(openmc.exceptions.DataError, match=match):
+        get_microxs_and_flux(model, model.materials, **kwargs)
+    with pytest.raises(openmc.exceptions.DataError, match=match):
+        MicroXS.from_multigroup_flux([0., 20.e6], [1.], model=model, **kwargs)
+    assert model.tallies is original
+    table = MicroXS.from_multigroup_flux(
+        [0., 20.e6], [1.], reactions=['(n,gamma)'], model=model, **kwargs)
+    assert table['O16', '(n,gamma)'][0] > 0.
+    with openmc.lib.TemporarySession(model=model):
+        # O16 has invalid metadata and U235 exists only in the global index.
+        table = MicroXS.from_multigroup_flux(
+            [0., 20.e6], [1.], chain_file=chain, nuclides=['F19', 'U235'], model=model)
+        assert table['U235', '(n,na)'] == 0.
+        assert table['F19', '(n,na)'][0] > 0.
+
+
+def test_breakup_microxs_independent_restart(breakup_model, monkeypatch):
+    """Compare independent depletion and restart with the expected inventories."""
+    model = breakup_model
+    chain = Chain()
+    parent = Nuclide('O16')
+    parent.add_reaction('(n,na)', 'C12', 0., 1., breakup=True)
+    for nuc in (parent, Nuclide('C12'), Nuclide('He4')):
+        chain.add_nuclide(nuc)
+    energies = [0., 10.e6, 20.e6]
+    kwargs = dict(chain_file=chain, nuclides=['O16'], temperature=600., model=model)
+    with openmc.lib.TemporarySession(model=model):
+        nuc = openmc.lib.load_nuclide('O16')
+        expected = sum(nuc.collapse_rate(mt, 600., energies, [0.25, 0.75])
+                       for mt in (51, 52))
+        table = MicroXS.from_multigroup_flux(energies, [1., 3.], **kwargs)
+        zero = MicroXS.from_multigroup_flux(energies, [0., 0.], **kwargs)
+    assert expected > 0.
+    assert table['O16', '(n,na)'] == pytest.approx(expected)
+    assert zero['O16', '(n,na)'] == 0.
+    table.to_hdf5('microxs.h5')
+    table = MicroXS.from_hdf5('microxs.h5')
+    fuel = openmc.Material(components={'O16': 1.}, density=0.01,
+                           density_units='atom/b-cm')
+    fuel.depletable = True
+    fuel.volume = 1.
+    flux = 2.
+    source = 1.e23
+    monkeypatch.setattr(openmc.deplete.pool, 'USE_MULTIPROCESSING', False)
+
+    def integrate(directory, steps, previous=None):
+        operator = IndependentOperator(
+            [fuel], [np.array([flux])], [table], chain,
+            normalization_mode='source-rate', prev_results=previous,
+        )
+        operator.output_dir = directory
+        integrator = PredictorIntegrator(operator, steps, source_rates=source)
+        integrator.integrate(write_rates=True)
+        return Results(operator.output_dir / 'depletion_results.h5')
+
+    full = integrate('full', [1., 2.])
+    first = integrate('restart', [1.])
+    restart = integrate('restart', [2.], first)
+    decay_constant = expected * flux * source * 1.e-24
+    times = np.array([0., 1., 3.])
+    remaining = 1.e22 * np.exp(-times * decay_constant)
+    for result in (full, restart):
+        t, rate = result.get_reaction_rate(fuel, 'O16', '(n,na)')
+        np.testing.assert_allclose(t, times)
+        np.testing.assert_allclose(rate, remaining * decay_constant)
+        for name in ('O16', 'C12', 'He4'):
+            atoms = result.get_atoms(fuel, name)[1]
+            expected_atoms = remaining if name == 'O16' else 1.e22 - remaining
+            np.testing.assert_allclose(atoms, expected_atoms)

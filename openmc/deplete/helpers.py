@@ -10,12 +10,14 @@ import sys
 
 from numpy import dot, zeros, newaxis, asarray
 
+from openmc.exceptions import DataError
 from openmc.mpi import comm
 from openmc.checkvalue import check_type, check_greater_than
 from openmc.data import JOULE_PER_EV, REACTION_MT
 from openmc.lib import (
     Tally, MaterialFilter, EnergyFilter, EnergyFunctionFilter, load_nuclide)
 import openmc.lib
+from .chain import BREAKUP_MODES
 from .abc import (
     ReactionRateHelper, NormalizationHelper, FissionYieldHelper)
 
@@ -122,6 +124,21 @@ class TalliedFissionYieldHelper(FissionYieldHelper):
 # -------------------------------------
 # Helpers for generating reaction rates
 # -------------------------------------
+
+
+def _select_breakup_mts(name, marked, lr_by_mt):
+    """Match a parent's marked reactions to inelastic levels by ENDF LR."""
+    components = {}
+    levels = sorted(mt for mt in lr_by_mt if 51 <= mt <= 91)
+    missing = [mt for mt in levels if lr_by_mt[mt] is None]
+    for reaction in sorted(marked):
+        if missing:
+            raise DataError(f"{name} {reaction}: missing LR for MTs {missing}")
+        mts = tuple(mt for mt in levels if BREAKUP_MODES.get(lr_by_mt[mt]) == reaction)
+        if not mts:
+            raise DataError(f"{name} {reaction}: no matching inelastic levels")
+        components[name, reaction] = mts
+    return components
 
 
 def _build_direct_tally_scores(reactions, nuclides, components):

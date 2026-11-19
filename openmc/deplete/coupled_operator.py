@@ -21,14 +21,13 @@ from openmc.exceptions import DataError
 import openmc.lib
 from openmc.mpi import comm
 from .abc import OperatorResult
-from .chain import BREAKUP_MODES
 from .openmc_operator import OpenMCOperator
 from .pool import _distribute
 from .results import Results
 from .helpers import (
     DirectReactionRateHelper, ChainFissionHelper, ConstantFissionYieldHelper,
     FissionYieldCutoffHelper, AveragedFissionYieldHelper, EnergyScoreHelper,
-    SourceRateHelper, FluxCollapseHelper)
+    SourceRateHelper, FluxCollapseHelper, _select_breakup_mts)
 
 
 __all__ = ["CoupledOperator", "Operator", "OperatorResult"]
@@ -383,16 +382,8 @@ class CoupledOperator(OpenMCOperator):
                 continue
             if name not in openmc.lib.nuclides:
                 openmc.lib.load_nuclide(name)
-            metadata = openmc.lib.nuclides[name].reaction_breakup_flags
-            levels = sorted(mt for mt in metadata if 51 <= mt <= 91)
-            missing = [mt for mt in levels if metadata[mt] is None]
-            for reaction in sorted(marked):
-                if missing:
-                    raise DataError(f"{name} {reaction}: missing LR for MTs {missing}")
-                mts = tuple(mt for mt in levels if BREAKUP_MODES.get(metadata[mt]) == reaction)
-                if not mts:
-                    raise DataError(f"{name} {reaction}: no matching inelastic levels")
-                components[name, reaction] = mts
+            lr_by_mt = openmc.lib.nuclides[name].reaction_breakup_flags
+            components.update(_select_breakup_mts(name, marked, lr_by_mt))
         return components
 
     def initial_condition(self):
@@ -423,9 +414,10 @@ class CoupledOperator(OpenMCOperator):
         # Generate tallies in memory
         materials = [openmc.lib.materials[int(i)] for i in self.burnable_mats]
 
+        composite_reaction_mts = self._resolve_breakup_rates()
+
         return super().initial_condition(
-            materials,
-            composite_reaction_mts=self._resolve_breakup_rates(),
+            materials, composite_reaction_mts=composite_reaction_mts,
         )
 
     def _generate_materials_xml(self):

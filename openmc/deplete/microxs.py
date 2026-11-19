@@ -17,10 +17,12 @@ import numpy as np
 from openmc.checkvalue import check_type, check_value, check_iterable_type, PathLike
 from openmc import StatePoint
 from openmc.mgxs import GROUP_STRUCTURES
-from openmc.data import REACTION_MT
+from openmc.data import DataLibrary, REACTION_MT
 import openmc
 from .chain import Chain, REACTIONS, _get_chain
 from .coupled_operator import _find_cross_sections, _get_nuclides_with_data
+from .helpers import (
+    _build_direct_tally_scores, _read_direct_tally_rate, _select_breakup_mts)
 from ..utility_funcs import h5py_file_or_group
 import openmc.lib
 from openmc.mpi import comm
@@ -39,6 +41,31 @@ DomainTypes: TypeAlias = Union[
     openmc.Filter,
     Sequence[openmc.Filter]
 ]
+
+
+def _model_breakup_mts(model, chain, nuclides, reactions):
+    """Read LR metadata for requested marked pairs before starting transport."""
+    components = {}
+    library = None
+    for name in nuclides:
+        if name not in chain:
+            continue
+        marked = set(chain[name].breakup_reactions).intersection(reactions)
+        if not marked:
+            continue
+        if library is None:
+            library = DataLibrary.from_xml(_find_cross_sections(model))
+        entry = library.get_by_material(name)
+        if entry is None:
+            continue
+        with h5py.File(entry['path']) as data:
+            lr_by_mt = {
+                int(group.attrs['mt']): group.attrs.get('breakup_flag')
+                for key, group in data[name]['reactions'].items()
+                if key.startswith('reaction_')
+            }
+        components.update(_select_breakup_mts(name, marked, lr_by_mt))
+    return components
 
 
 def get_microxs_and_flux(
@@ -124,8 +151,8 @@ def get_microxs_and_flux(
         "nuclides", all selected nuclides are used.
     include_model_tallies : bool, optional
         Whether to include tallies already assigned to ``model`` in the
-        transport solve. The original tally collection is restored after the
-        solve, including if an exception is raised. Defaults to False.
+        transport solve. The original tallies are restored on successful return.
+        Defaults to False.
 
     Returns
     -------
@@ -210,6 +237,9 @@ def get_microxs_and_flux(
     else:
         rr_energy_filter = energy_filter
 
+    components = _model_breakup_mts(model, chain, nuclides, reactions)
+    scores, bins = _build_direct_tally_scores(rr_reactions, rr_nuclides, components)
+
     # Create one flux tally (and optionally one RR tally) per domain filter.
     flux_tallies = []
     rr_tallies = []
@@ -230,7 +260,7 @@ def get_microxs_and_flux(
                 rr_tally.filters.append(rr_energy_filter)
             rr_tally.nuclides = rr_nuclides
             rr_tally.multiply_density = False
-            rr_tally.scores = rr_reactions
+            rr_tally.scores = scores
             model.tallies.append(rr_tally)
             rr_tallies.append(rr_tally)
 
@@ -311,6 +341,17 @@ def get_microxs_and_flux(
             if reaction_rate_mode == "flux":
                 flux = flux.sum(axis=-1, keepdims=True)
 
+            if scores != rr_reactions:
+                # Each score column contains all domains and energy groups.
+                rates = np.empty((len(flux), len(rr_nuclides), len(rr_reactions),
+                                  reaction_rates.shape[-1]))
+                for i, name in enumerate(rr_nuclides):
+                    rows = np.moveaxis(reaction_rates[:, i], 1, 0)
+                    for j, reaction in enumerate(rr_reactions):
+                        rates[:, i, j] = _read_direct_tally_rate(
+                            rows, name, reaction, components, bins)
+                reaction_rates = rates
+
             xs = np.zeros_like(reaction_rates)
             d, _, _, g = np.nonzero(flux)
             xs[d, ..., g] = reaction_rates[d, ..., g] / flux[d, :, :, g]
@@ -324,7 +365,8 @@ def get_microxs_and_flux(
             multigroup_flux=flux_i,
             chain_file=chain_file,
             nuclides=nuclides,
-            reactions=reactions
+            reactions=reactions,
+            model=model if components else None,
         ) for flux_i in fluxes]
 
         # We need to return one-group fluxes to match the microscopic cross
@@ -358,7 +400,9 @@ class MicroXS:
     data : numpy.ndarray of floats
         3D array containing microscopic cross section values for each
         nuclide, reaction, and energy group. Cross section values are assumed to
-        be in [b], and indexed by [nuclide, reaction, energy group]
+        be in [b], and indexed by [nuclide, reaction, energy group]. For a
+        marked breakup reaction, supply the sum of its component cross
+        sections per event. The depletion chain accounts for product yields.
     nuclides : list of str
         List of nuclide symbols for that have data for at least one
         reaction.
@@ -451,7 +495,8 @@ class MicroXS:
             raise ValueError('Length of flux array should be len(energies)-1')
 
         chain = _get_chain(chain_file)
-        cross_sections = _find_cross_sections(model=None)
+        model = init_kwargs.get('model')
+        cross_sections = _find_cross_sections(model)
         nuclides_with_data = _get_nuclides_with_data(cross_sections)
 
         # If no nuclides were specified, default to all nuclides from the chain
@@ -476,17 +521,27 @@ class MicroXS:
         # Normalize multigroup flux
         multigroup_flux /= flux_sum
 
-        # Compute microscopic cross sections within a temporary session
+        # Validate file-based LR flags before opening a new library session.
+        use_loaded_flags = openmc.lib.is_initialized
+        components = {}
+        if not use_loaded_flags:
+            components = _model_breakup_mts(model, chain, nuclides, reactions)
+
         with openmc.lib.TemporarySession(**init_kwargs):
             # For each nuclide and reaction, compute the flux-averaged xs
             for nuc_index, nuc in enumerate(nuclides):
                 if nuc not in nuclides_with_data:
                     continue
                 lib_nuc = openmc.lib.load_nuclide(nuc)
+                if use_loaded_flags and nuc in chain:
+                    marked = set(chain[nuc].breakup_reactions).intersection(reactions)
+                    if marked:
+                        components.update(_select_breakup_mts(
+                            nuc, marked, lib_nuc.reaction_breakup_flags))
                 for mt_index, mt in enumerate(mts):
-                    microxs_arr[nuc_index, mt_index, 0] = lib_nuc.collapse_rate(
-                        mt, temperature, energies, multigroup_flux
-                    )
+                    microxs_arr[nuc_index, mt_index, 0] = sum(
+                        lib_nuc.collapse_rate(component, temperature, energies, multigroup_flux)
+                        for component in components.get((nuc, reactions[mt_index]), (mt,)))
 
         return cls(microxs_arr, nuclides, reactions)
 
