@@ -16,6 +16,7 @@ from pathlib import Path
 from warnings import warn
 from typing import List
 
+from scipy.constants import physical_constants
 import lxml.etree as ET
 
 from openmc.checkvalue import check_type, check_length, check_greater_than, PathLike
@@ -139,14 +140,14 @@ def breakup_paths(parent, records, selected, inventory):
         conflicts = REACTIONS[name].mts.intersection(records)
         if 4 in records and records[4]['lr'] == first['lr']:
             conflicts.add(4)
-        if conflicts or any(records[mt]['qm'] != first['qm'] for mt in mts):
+        if conflicts:
             raise ValueError(
                 f"Conflicting {parent} {name} MTs {sorted(conflicts.union(mts))}")
 
         # The residual offsets include all emitted neutrons and charged fragments.
-        z, a, _ = zam(parent)
+        z, parent_a, _ = zam(parent)
         delta_a, delta_z = openmc.data.DADZ[name]
-        a += delta_a
+        a = parent_a + delta_a
         z += delta_z
         if z == a == 0:
             target = None
@@ -155,10 +156,33 @@ def breakup_paths(parent, records, selected, inventory):
         else:
             raise ValueError(f"Inconsistent breakup balance for {parent} MTs {mts}")
 
-        for product in (*REACTIONS[name].secondaries, target):
-            if product is not None and product not in inventory:
+        products = REACTIONS[name].secondaries
+        if target is not None:
+            products += (target,)
+        for product in products:
+            if product not in inventory:
                 raise ValueError(f"Missing breakup product {product} for {parent} MTs {mts}")
-        paths.append((name, target, first['qm']))
+        qm = first['qm']
+        if any(records[mt]['qm'] != qm for mt in mts):
+            qm_by_mt = {mt: records[mt]['qm'] for mt in sorted(mts)}
+            detail = f"{parent} {name} breakup QM by MT (eV): {qm_by_mt}"
+            net_neutrons = parent_a - sum(zam(p)[1] for p in products)
+            try:
+                mass_difference = (openmc.data.atomic_mass(parent)
+                                   - sum(map(openmc.data.atomic_mass, products))
+                                   - net_neutrons * openmc.data.NEUTRON_MASS)
+            except KeyError as exc:
+                raise ValueError(f"{detail}; missing atomic mass for {exc}") from exc
+            mev_per_u = physical_constants['atomic mass constant energy equivalent in MeV'][0]
+            mass_q = mass_difference * mev_per_u * openmc.data.EV_PER_MEV
+            # Allow for evaluated QM values rounded to the nearest keV.
+            matches = {q for q in qm_by_mt.values() if abs(q - mass_q) <= 500}
+            if len(matches) != 1:
+                raise ValueError(f"{detail}; no unique match to mass-balance Q={mass_q:g} eV")
+            qm = matches.pop()
+            warn(f"{detail}; mass-balance Q={mass_q:g} eV supports QM={qm:g} eV")
+
+        paths.append((name, target, qm))
 
     return paths
 

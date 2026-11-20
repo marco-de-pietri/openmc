@@ -105,6 +105,24 @@ def test_conflicting_breakup(make_chain, conflict):
     assert '56' in str(exc.value) and str(conflict[0]) in str(exc.value)
 
 
+@pytest.mark.parametrize('parent,lr,name,target,qm', [
+    ('C12', 23, '(n,n3a)', None, -7_275_000),
+    ('O17', 24, '(n,2na)', 'C12', -11_305_000),
+])
+def test_mass_balance_resolves_breakup(make_chain, parent, lr, name, target, qm):
+    inventory = {'O17', 'C12', 'He4'}
+    with pytest.warns(UserWarning, match='mass-balance Q'):
+        chain = make_chain({parent: [(91, lr, 0), (52, lr, qm)]},
+                           inventory=inventory, reactions=[name])
+    assert chain[parent].reactions == [(name, target, qm, 1.)]
+
+
+def test_ambiguous_breakup_q(make_chain):
+    with pytest.raises(ValueError, match='no unique match'):
+        make_chain({'C12': [(52, 23, -7_274_750), (91, 23, -7_275_000)]},
+                   reactions=['(n,n3a)'])
+
+
 def test_invalid_breakup_products(make_chain):
     with pytest.raises(ValueError, match='balance for Li7'):
         make_chain({'Li7': [(51, 23, -1)]}, reactions=['(n,n3a)'])
