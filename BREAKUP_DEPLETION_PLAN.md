@@ -37,6 +37,8 @@ See the [Phase 3 implementation and acceptance tests](BREAKUP_DEPLETION_PHASE_3.
 
 **Outcome.** Compare direct rates to separately tallied component sums and collapsed rates to component-wise flux integrals. Test two parents sharing a reaction name with different rate sources. Verify analytic constant-rate inventories, independent depletion, and restart. At fixed composition, verify that ordinary component and particle-production tallies retain their values. Run affected regression tests with the project’s prescribed data, strict floating-point build, and MPI options as applicable.
 
+See the [Phase 4 verification plan and acceptance checks](BREAKUP_DEPLETION_PHASE_4.md).
+
 ## Phase 5 — Generate and publish a compatible data pair
 
 **Goal.** Use the supported OpenMC chain generator in openmc-dev/data and regenerate neutron HDF5 files through an ENDF-aware processing path that preserves LR. Record evaluation releases and processing versions. Inspect LR attributes in the distributed files and validate full and reduced chains against those files.
