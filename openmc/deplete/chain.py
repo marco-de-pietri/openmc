@@ -380,7 +380,7 @@ class Chain:
     @classmethod
     def from_endf(cls, decay_files, fpy_files, neutron_files,
         reactions=('(n,2n)', '(n,3n)', '(n,4n)', '(n,gamma)', '(n,p)', '(n,a)'),
-        progress=True
+        progress=True,  breakup_reactions=False
     ):
         """Create a depletion chain from ENDF files.
 
@@ -400,15 +400,16 @@ class Chain:
         reactions : iterable of str, optional
             Transmutation reactions to include in the depletion chain, e.g.,
             `["(n,2n)", "(n,gamma)"]`. Note that fission is always included if
-            it is present. Supported neutron inelastic breakup paths are
-            included when their conventional reaction name is selected,
-            e.g., "(n,na)". See :data:`openmc.deplete.chain.REACTIONS`
+            it is present. See :data:`openmc.deplete.chain.REACTIONS`
             for the full list of transmutation reactions.
 
             .. versionadded:: 0.12.1
         progress : bool, optional
             Flag to print status messages during processing. Does not
             effect warning messages
+        breakup_reactions : bool, optional
+            Include neutron inelastic breakup paths whose reaction names are
+            selected in ``reactions``. Defaults to False.
 
         Returns
         -------
@@ -510,10 +511,11 @@ class Chain:
             fissionable = False
             if parent in reactions:
                 reactions_available = set(reactions[parent].keys())
-                paths = breakup_paths(
-                    parent, reactions[parent], transmutation_reactions, decay_data)
-                for name, target, qm in paths:
-                    nuclide.add_reaction(name, target, qm, 1.0, breakup=True)
+                if breakup_reactions:
+                    paths = breakup_paths(
+                        parent, reactions[parent], transmutation_reactions, decay_data)
+                    for name, target, qm in paths:
+                        nuclide.add_reaction(name, target, qm, 1.0, breakup=True)
                 for name in transmutation_reactions:
                     mts = REACTIONS[name].mts
                     delta_A, delta_Z = openmc.data.DADZ[name]
