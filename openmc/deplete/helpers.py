@@ -213,7 +213,7 @@ class DirectReactionRateHelper(ReactionRateHelper):
 
     Parameters
     ----------
-    n_nucs : int
+    n_nuc : int
         Number of burnable nuclides tracked by
         :class:`openmc.deplete.CoupledOperator`
     n_react : int
@@ -331,7 +331,7 @@ class FluxCollapseHelper(ReactionRateHelper):
     n_nucs : int
         Number of burnable nuclides tracked by
         :class:`openmc.deplete.CoupledOperator`
-    n_react : int
+    n_reacts : int
         Number of reactions tracked by :class:`openmc.deplete.CoupledOperator`
     energies : iterable of float
         Energy group boundaries for flux spectrum in [eV]
